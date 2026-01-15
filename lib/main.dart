@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:geolocator/geolocator.dart';
@@ -15,10 +16,7 @@ class SpeedCameraApp extends StatelessWidget {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
       title: 'Speed Camera Navigator',
-      theme: ThemeData(
-        useMaterial3: true,
-        primarySwatch: Colors.blue,
-      ),
+      theme: ThemeData(useMaterial3: true, colorSchemeSeed: Colors.blue),
       home: const MainHomeScreen(),
     );
   }
@@ -32,67 +30,16 @@ class MainHomeScreen extends StatefulWidget {
 }
 
 class _MainHomeScreenState extends State<MainHomeScreen> {
-  int _currentIndex = 0;
-
-  final List<Widget> _screens = const [
-    NavigationScreen(),
-    SpeedAlertScreen(),
-    ReportScreen(),
-    CommunityScreen(),
-    SettingsScreen(),
-  ];
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      body: _screens[_currentIndex],
-      bottomNavigationBar: BottomNavigationBar(
-        currentIndex: _currentIndex,
-        type: BottomNavigationBarType.fixed,
-        onTap: (index) {
-          setState(() => _currentIndex = index);
-        },
-        items: const [
-          BottomNavigationBarItem(
-            icon: Icon(Icons.navigation),
-            label: 'Navigate',
-          ),
-          BottomNavigationBarItem(
-            icon: Icon(Icons.speed),
-            label: 'Speed',
-          ),
-          BottomNavigationBarItem(
-            icon: Icon(Icons.report),
-            label: 'Report',
-          ),
-          BottomNavigationBarItem(
-            icon: Icon(Icons.people),
-            label: 'Community',
-          ),
-          BottomNavigationBarItem(
-            icon: Icon(Icons.settings),
-            label: 'Settings',
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-//////////////////////////////////////////////////////////
-/// 1️⃣ NAVIGATION SCREEN (MAP PLACEHOLDER)
-//////////////////////////////////////////////////////////
-class NavigationScreen extends StatefulWidget {
-  const NavigationScreen({super.key});
-
-  @override
-  State<NavigationScreen> createState() => _NavigationScreenState();
-}
-
-class _NavigationScreenState extends State<NavigationScreen> {
+  // Map State
   GoogleMapController? _mapController;
   Position? _currentPosition;
   final Set<Marker> _markers = {};
+
+  // App Logic State
+  int _currentSpeed = 0;
+  final int _safeLimit = 100;
+  final List<Map<String, dynamic>> _communityReports = [];
+  final List<String> _notifications = [];
 
   @override
   void initState() {
@@ -127,189 +74,138 @@ class _NavigationScreenState extends State<NavigationScreen> {
         Marker(
           markerId: const MarkerId('destination'),
           position: position,
-          icon: BitmapDescriptor.defaultMarkerWithHue(
-            BitmapDescriptor.hueRed,
-          ),
+          icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueRed),
           infoWindow: const InfoWindow(title: 'Destination'),
         ),
       );
     });
   }
 
+  void _addReport(String type) async {
+    String reportEntry = "$type reported nearby";
+
+    setState(() {
+      _communityReports.insert(0, {"text": reportEntry, "time": "Just now"});
+      _notifications.add("$type detected on your route!");
+    });
+
+    // Remove notification after 4 seconds (Auto-fade)
+    Future.delayed(const Duration(seconds: 4), () {
+      if (mounted && _notifications.isNotEmpty) {
+        setState(() => _notifications.removeAt(0));
+      }
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: _currentPosition == null
-          ? const Center(child: CircularProgressIndicator())
-          : Stack(
-              children: [
-                GoogleMap(
+      extendBodyBehindAppBar: true,
+      appBar: AppBar(
+        backgroundColor: Colors.transparent,
+        elevation: 0,
+        actions: [
+          // Simulated Speed Input for testing
+          Container(
+            margin: const EdgeInsets.only(right: 10, top: 10),
+            width: 70,
+            height: 40,
+            decoration: BoxDecoration(
+                color: Colors.white, borderRadius: BorderRadius.circular(8)),
+            child: TextField(
+              keyboardType: TextInputType.number,
+              textAlign: TextAlign.center,
+              decoration: const InputDecoration(
+                  hintText: 'km/h', border: InputBorder.none),
+              onChanged: (val) =>
+                  setState(() => _currentSpeed = int.tryParse(val) ?? 0),
+            ),
+          )
+        ],
+      ),
+      drawer: Drawer(
+        child: ListView(
+          children: [
+            const DrawerHeader(
+              decoration: BoxDecoration(color: Colors.blue),
+              child: Text('Menu',
+                  style: TextStyle(color: Colors.white, fontSize: 24)),
+            ),
+            ListTile(
+              leading: const Icon(Icons.people),
+              title: const Text('Community Reports'),
+              onTap: () {
+                Navigator.pop(context);
+                _showCommunityDialog();
+              },
+            ),
+            const ListTile(
+                leading: Icon(Icons.settings), title: Text('Settings')),
+          ],
+        ),
+      ),
+      body: Stack(
+        children: [
+          // 1. THE MAP BACKGROUND
+          _currentPosition == null
+              ? const Center(child: CircularProgressIndicator())
+              : GoogleMap(
                   initialCameraPosition: CameraPosition(
-                    target: LatLng(
-                      _currentPosition!.latitude,
-                      _currentPosition!.longitude,
-                    ),
+                    target: LatLng(_currentPosition!.latitude,
+                        _currentPosition!.longitude),
                     zoom: 15,
                   ),
                   markers: _markers,
                   myLocationEnabled: true,
-                  myLocationButtonEnabled: true,
                   onTap: _onMapTapped,
-                  onMapCreated: (controller) {
-                    _mapController = controller;
-                  },
+                  onMapCreated: (controller) => _mapController = controller,
                 ),
 
-                // Top instruction panel (tap-through enabled)
-                Positioned(
-                  top: 16,
-                  left: 16,
-                  right: 16,
-                  child: IgnorePointer(
-                    child: Card(
-                      elevation: 4,
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      child: const Padding(
-                        padding: EdgeInsets.all(16),
-                        child: Text(
-                          'Tap on map to select destination',
-                          style: TextStyle(fontWeight: FontWeight.bold),
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-
-                // Waze-style alert buttons
-                Positioned(
-                  bottom: 20,
-                  right: 16,
-                  child: Column(
-                    children: [
-                      FloatingActionButton(
-                        heroTag: 'speedCam',
-                        backgroundColor: Colors.red,
-                        onPressed: () {},
-                        child: const Icon(Icons.camera_alt),
-                      ),
-                      const SizedBox(height: 12),
-                      FloatingActionButton(
-                        heroTag: 'hazard',
-                        backgroundColor: Colors.orange,
-                        onPressed: () {},
-                        child: const Icon(Icons.warning),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
+          // 2. RED NOTIFICATIONS (Top Right)
+          Positioned(
+            top: 100,
+            right: 16,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: _notifications
+                  .map((n) => LiveNotification(message: n))
+                  .toList(),
             ),
-    );
-  }
-}
+          ),
 
-//////////////////////////////////////////////////////////
-/// 2️⃣ SPEED & ALERTS SCREEN
-//////////////////////////////////////////////////////////
-class SpeedAlertScreen extends StatelessWidget {
-  const SpeedAlertScreen({super.key});
+          // 3. SPEED GAUGE (Bottom Left)
+          Positioned(
+            bottom: 30,
+            left: 16,
+            child: SpeedGauge(speed: _currentSpeed, limit: _safeLimit),
+          ),
 
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('Speed & Alerts')),
-      body: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          children: [
-            _infoCard(
-              icon: Icons.speed,
-              title: 'Current Speed',
-              subtitle: '--- km/h',
-            ),
-            _infoCard(
-              icon: Icons.traffic,
-              title: 'Speed Limit',
-              subtitle: '-- km/h',
-            ),
-            _infoCard(
-              icon: Icons.notifications_active,
-              title: 'Active Alerts',
-              subtitle: 'No alerts',
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _infoCard({
-    required IconData icon,
-    required String title,
-    required String subtitle,
-  }) {
-    return Card(
-      margin: const EdgeInsets.only(bottom: 12),
-      child: ListTile(
-        leading: Icon(icon, size: 32),
-        title: Text(title),
-        subtitle: Text(subtitle),
-      ),
-    );
-  }
-}
-
-//////////////////////////////////////////////////////////
-/// 3️⃣ REPORT INCIDENT SCREEN
-//////////////////////////////////////////////////////////
-class ReportScreen extends StatelessWidget {
-  const ReportScreen({super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('Report Incident')),
-      body: GridView.count(
-        padding: const EdgeInsets.all(16),
-        crossAxisCount: 2,
-        crossAxisSpacing: 12,
-        mainAxisSpacing: 12,
-        children: const [
-          ReportTile(icon: Icons.camera_alt, label: 'Speed Camera'),
-          ReportTile(icon: Icons.car_crash, label: 'Accident'),
-          ReportTile(icon: Icons.traffic, label: 'Traffic Jam'),
-          ReportTile(icon: Icons.warning, label: 'Road Hazard'),
+          // 4. EXPANDABLE REPORT BUTTON (Bottom Right)
+          Positioned(
+            bottom: 30,
+            right: 16,
+            child: ExpandableReportButton(onReport: _addReport),
+          ),
         ],
       ),
     );
   }
-}
 
-class ReportTile extends StatelessWidget {
-  final IconData icon;
-  final String label;
-
-  const ReportTile({
-    super.key,
-    required this.icon,
-    required this.label,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Card(
-      elevation: 3,
-      child: InkWell(
-        onTap: () {},
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(icon, size: 40),
-            const SizedBox(height: 10),
-            Text(label),
-          ],
+  void _showCommunityDialog() {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text("Community Updates"),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: ListView.builder(
+            shrinkWrap: true,
+            itemCount: _communityReports.length,
+            itemBuilder: (context, i) => ListTile(
+              title: Text(_communityReports[i]['text']),
+              subtitle: Text(_communityReports[i]['time']),
+            ),
+          ),
         ),
       ),
     );
@@ -317,59 +213,146 @@ class ReportTile extends StatelessWidget {
 }
 
 //////////////////////////////////////////////////////////
-/// 4️⃣ COMMUNITY SCREEN
+/// CUSTOM COMPONENTS
 //////////////////////////////////////////////////////////
-class CommunityScreen extends StatelessWidget {
-  const CommunityScreen({super.key});
+
+class SpeedGauge extends StatefulWidget {
+  final int speed;
+  final int limit;
+  const SpeedGauge({super.key, required this.speed, required this.limit});
+
+  @override
+  State<SpeedGauge> createState() => _SpeedGaugeState();
+}
+
+class _SpeedGaugeState extends State<SpeedGauge>
+    with SingleTickerProviderStateMixin {
+  late AnimationController _blinkController;
+
+  @override
+  void initState() {
+    super.initState();
+    _blinkController = AnimationController(
+        vsync: this, duration: const Duration(milliseconds: 500))
+      ..repeat(reverse: true);
+  }
+
+  @override
+  void dispose() {
+    _blinkController.dispose();
+    super.dispose();
+  }
+
+  Color get _gaugeColor {
+    if (widget.speed > widget.limit + 40) return Colors.red;
+    if (widget.speed > widget.limit) return Colors.red;
+    if (widget.speed > widget.limit - 20) return Colors.yellow;
+    return Colors.green;
+  }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('Community Updates')),
-      body: ListView(
-        padding: const EdgeInsets.all(16),
-        children: const [
-          ListTile(
-            leading: Icon(Icons.person),
-            title: Text('User reported a speed camera'),
-            subtitle: Text('2 minutes ago'),
+    bool isDanger = widget.speed > (widget.limit + 40);
+    return AnimatedBuilder(
+      animation: _blinkController,
+      builder: (context, child) {
+        return Container(
+          width: 90,
+          height: 90,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: (isDanger && _blinkController.value > 0.5)
+                ? Colors.black
+                : _gaugeColor,
+            border: Border.all(color: Colors.white, width: 4),
+            boxShadow: const [BoxShadow(blurRadius: 10, color: Colors.black26)],
           ),
-          ListTile(
-            leading: Icon(Icons.person),
-            title: Text('Accident ahead'),
-            subtitle: Text('5 minutes ago'),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Text('${widget.speed}',
+                  style: const TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 24)),
+              const Divider(
+                  color: Colors.white, height: 4, indent: 20, endIndent: 20),
+              Text('LIMIT ${widget.limit}',
+                  style: const TextStyle(
+                      color: Colors.white70,
+                      fontSize: 10,
+                      fontWeight: FontWeight.bold)),
+            ],
           ),
-        ],
+        );
+      },
+    );
+  }
+}
+
+class LiveNotification extends StatelessWidget {
+  final String message;
+  const LiveNotification({super.key, required this.message});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+      decoration: BoxDecoration(
+        color: Colors.red.withOpacity(0.85),
+        borderRadius: BorderRadius.circular(12),
+        boxShadow: const [BoxShadow(blurRadius: 4, color: Colors.black26)],
+      ),
+      child: Text(
+        message,
+        style: const TextStyle(
+            color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
       ),
     );
   }
 }
 
-//////////////////////////////////////////////////////////
-/// 5️⃣ SETTINGS SCREEN
-//////////////////////////////////////////////////////////
-class SettingsScreen extends StatelessWidget {
-  const SettingsScreen({super.key});
+class ExpandableReportButton extends StatefulWidget {
+  final Function(String) onReport;
+  const ExpandableReportButton({super.key, required this.onReport});
+
+  @override
+  State<ExpandableReportButton> createState() => _ExpandableReportButtonState();
+}
+
+class _ExpandableReportButtonState extends State<ExpandableReportButton> {
+  bool _isOpen = false;
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('Settings')),
-      body: ListView(
-        children: const [
-          ListTile(
-            leading: Icon(Icons.volume_up),
-            title: Text('Audio Alerts'),
-          ),
-          ListTile(
-            leading: Icon(Icons.map),
-            title: Text('Map Preferences'),
-          ),
-          ListTile(
-            leading: Icon(Icons.info),
-            title: Text('About App'),
-          ),
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        if (_isOpen) ...[
+          _reportIcon(Icons.camera_alt, "Speed Camera", Colors.red),
+          _reportIcon(Icons.car_crash, "Accident", Colors.orange),
+          _reportIcon(Icons.traffic, "Traffic Jam", Colors.amber),
         ],
+        FloatingActionButton(
+          backgroundColor: Colors.blue,
+          child: Icon(_isOpen ? Icons.close : Icons.report),
+          onPressed: () => setState(() => _isOpen = !_isOpen),
+        ),
+      ],
+    );
+  }
+
+  Widget _reportIcon(IconData icon, String label, Color color) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: FloatingActionButton.small(
+        backgroundColor: color,
+        onPressed: () {
+          widget.onReport(label);
+          setState(() => _isOpen = false);
+        },
+        child: Icon(icon, color: Colors.white),
       ),
     );
   }
