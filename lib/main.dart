@@ -1,11 +1,219 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:typed_data';
+import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
+
+// ─────────────────────────────────────────────
+// CUSTOM MARKER ICON PAINTER
+// Draws shaped icons to bytes so Google Maps can render them as markers.
+// ─────────────────────────────────────────────
+
+class MarkerIconPainter {
+  /// Draws a camera body shape: rectangle body + small lens circle on top-left,
+  /// viewfinder bump on top-centre. Returns a BitmapDescriptor.
+  static Future<BitmapDescriptor> cameraIcon({
+    Color bodyColor = const Color(0xFF7B1FA2),
+    double size = 80,
+  }) async {
+    final recorder = ui.PictureRecorder();
+    final canvas = Canvas(recorder);
+    final w = size;
+    final h = size;
+
+    // Shadow
+    final shadowPaint = Paint()
+      ..color = Colors.black.withOpacity(0.25)
+      ..maskFilter = const ui.MaskFilter.blur(ui.BlurStyle.normal, 3);
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(
+        Rect.fromLTWH(4, 6, w - 8, h * 0.65),
+        const Radius.circular(10),
+      ),
+      shadowPaint,
+    );
+
+    // Camera body
+    final bodyPaint = Paint()..color = bodyColor;
+    final bodyRect = RRect.fromRectAndRadius(
+        Rect.fromLTWH(2, 4, w - 4, h * 0.62), const Radius.circular(9));
+    canvas.drawRRect(bodyRect, bodyPaint);
+
+    // Viewfinder bump (top centre)
+    final bumpPaint = Paint()..color = bodyColor;
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(
+        Rect.fromLTWH(w * 0.33, 0, w * 0.34, 8),
+        const Radius.circular(4),
+      ),
+      bumpPaint,
+    );
+
+    // Lens outer ring (white)
+    final lensOuterPaint = Paint()..color = Colors.white;
+    canvas.drawCircle(Offset(w / 2, h * 0.34), w * 0.23, lensOuterPaint);
+
+    // Lens inner (dark)
+    final lensInnerPaint = Paint()..color = const Color(0xFF1A1A2E);
+    canvas.drawCircle(Offset(w / 2, h * 0.34), w * 0.165, lensInnerPaint);
+
+    // Lens shine
+    final shinePaint = Paint()..color = Colors.white.withOpacity(0.45);
+    canvas.drawCircle(Offset(w / 2 - w * 0.07, h * 0.26), w * 0.06, shinePaint);
+
+    // Flash dot (top-left corner of body)
+    final flashPaint = Paint()..color = Colors.white.withOpacity(0.8);
+    canvas.drawCircle(Offset(w * 0.18, h * 0.15), w * 0.065, flashPaint);
+
+    // Triangle pointer at bottom centre
+    final triPaint = Paint()..color = bodyColor;
+    final triPath = Path()
+      ..moveTo(w / 2 - 8, h * 0.66)
+      ..lineTo(w / 2 + 8, h * 0.66)
+      ..lineTo(w / 2, h * 0.82)
+      ..close();
+    canvas.drawPath(triPath, triPaint);
+
+    final picture = recorder.endRecording();
+    final img = await picture.toImage(w.toInt(), (h * 0.85).toInt());
+    final byteData = await img.toByteData(format: ui.ImageByteFormat.png);
+    final bytes = byteData!.buffer.asUint8List();
+    return BitmapDescriptor.fromBytes(bytes);
+  }
+
+  /// Warning triangle icon for accidents.
+  static Future<BitmapDescriptor> warningIcon({
+    Color color = const Color(0xFFE65100),
+    double size = 80,
+  }) async {
+    final recorder = ui.PictureRecorder();
+    final canvas = Canvas(recorder);
+    final w = size;
+    final h = size;
+
+    // Shadow
+    final shadowPaint = Paint()
+      ..color = Colors.black.withOpacity(0.25)
+      ..maskFilter = const ui.MaskFilter.blur(ui.BlurStyle.normal, 3);
+    final shadowPath = Path()
+      ..moveTo(w / 2, 6)
+      ..lineTo(w - 4, h * 0.72)
+      ..lineTo(4, h * 0.72)
+      ..close();
+    canvas.drawPath(shadowPath, shadowPaint);
+
+    // Triangle body
+    final bodyPaint = Paint()..color = color;
+    final triPath = Path()
+      ..moveTo(w / 2, 4)
+      ..lineTo(w - 4, h * 0.68)
+      ..lineTo(4, h * 0.68)
+      ..close();
+    canvas.drawPath(triPath, bodyPaint);
+
+    // White border inside
+    final borderPaint = Paint()
+      ..color = Colors.white
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 3;
+    final borderPath = Path()
+      ..moveTo(w / 2, 12)
+      ..lineTo(w - 12, h * 0.62)
+      ..lineTo(12, h * 0.62)
+      ..close();
+    canvas.drawPath(borderPath, borderPaint);
+
+    // Exclamation mark
+    final textPainter = TextPainter(
+      text: TextSpan(
+        text: '!',
+        style: TextStyle(
+          color: Colors.white,
+          fontSize: w * 0.35,
+          fontWeight: FontWeight.bold,
+        ),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    textPainter.paint(canvas, Offset(w / 2 - textPainter.width / 2, h * 0.25));
+
+    // Triangle pointer bottom
+    final triPointer = Paint()..color = color;
+    final ptr = Path()
+      ..moveTo(w / 2 - 8, h * 0.68)
+      ..lineTo(w / 2 + 8, h * 0.68)
+      ..lineTo(w / 2, h * 0.84)
+      ..close();
+    canvas.drawPath(ptr, triPointer);
+
+    final picture = recorder.endRecording();
+    final img = await picture.toImage(w.toInt(), (h * 0.88).toInt());
+    final byteData = await img.toByteData(format: ui.ImageByteFormat.png);
+    final bytes = byteData!.buffer.asUint8List();
+    return BitmapDescriptor.fromBytes(bytes);
+  }
+
+  /// Traffic light icon for traffic jams.
+  static Future<BitmapDescriptor> trafficIcon({
+    double size = 80,
+  }) async {
+    final recorder = ui.PictureRecorder();
+    final canvas = Canvas(recorder);
+    final w = size;
+    final h = size;
+
+    // Shadow
+    final shadowPaint = Paint()
+      ..color = Colors.black.withOpacity(0.25)
+      ..maskFilter = const ui.MaskFilter.blur(ui.BlurStyle.normal, 3);
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(Rect.fromLTWH(w * 0.28, 5, w * 0.44, h * 0.65),
+          const Radius.circular(8)),
+      shadowPaint,
+    );
+
+    // Traffic light body
+    final bodyPaint = Paint()..color = const Color(0xFF212121);
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(Rect.fromLTWH(w * 0.26, 3, w * 0.48, h * 0.62),
+          const Radius.circular(8)),
+      bodyPaint,
+    );
+
+    // Red light
+    canvas.drawCircle(
+        Offset(w / 2, h * 0.14), w * 0.1, Paint()..color = Colors.red);
+    // Amber light
+    canvas.drawCircle(
+        Offset(w / 2, h * 0.32), w * 0.1, Paint()..color = Colors.amber);
+    // Green light (brightest — traffic jam just started)
+    canvas.drawCircle(Offset(w / 2, h * 0.5), w * 0.1,
+        Paint()..color = const Color(0xFF66BB6A));
+
+    // Pole
+    final polePaint = Paint()..color = const Color(0xFF424242);
+    canvas.drawRect(Rect.fromLTWH(w / 2 - 3, h * 0.64, 6, h * 0.18), polePaint);
+
+    // Base
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(
+          Rect.fromLTWH(w * 0.28, h * 0.8, w * 0.44, h * 0.06),
+          const Radius.circular(3)),
+      polePaint,
+    );
+
+    final picture = recorder.endRecording();
+    final img = await picture.toImage(w.toInt(), (h * 0.9).toInt());
+    final byteData = await img.toByteData(format: ui.ImageByteFormat.png);
+    final bytes = byteData!.buffer.asUint8List();
+    return BitmapDescriptor.fromBytes(bytes);
+  }
+}
 
 void main() {
   runApp(const SpeedCameraApp());
@@ -24,6 +232,156 @@ class SpeedCameraApp extends StatelessWidget {
     );
   }
 }
+
+// ─────────────────────────────────────────────
+// DATA MODELS
+// ─────────────────────────────────────────────
+
+/// Persistence strategy:
+///   - SpeedCamera  → permanent (SharedPreferences key: 'speed_cameras')
+///   - Accident     → temporary, 2-hour TTL (key: 'temp_reports')
+///   - Traffic Jam  → temporary, 2-hour TTL (key: 'temp_reports')
+class ReportedLocation {
+  final String id;
+  final String type; // 'Speed Camera' | 'Accident' | 'Traffic Jam'
+  final double lat;
+  final double lng;
+  final DateTime reportedAt;
+  final bool isPermanent; // true only for Speed Camera
+
+  ReportedLocation({
+    required this.id,
+    required this.type,
+    required this.lat,
+    required this.lng,
+    required this.reportedAt,
+    required this.isPermanent,
+  });
+
+  bool get isExpired {
+    if (isPermanent) return false;
+    return DateTime.now().difference(reportedAt).inHours >= 2;
+  }
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'type': type,
+        'lat': lat,
+        'lng': lng,
+        'reportedAt': reportedAt.toIso8601String(),
+        'isPermanent': isPermanent,
+      };
+
+  factory ReportedLocation.fromJson(Map<String, dynamic> json) =>
+      ReportedLocation(
+        id: json['id'],
+        type: json['type'],
+        lat: json['lat'],
+        lng: json['lng'],
+        reportedAt: DateTime.parse(json['reportedAt']),
+        isPermanent: json['isPermanent'] ?? false,
+      );
+
+  LatLng get latLng => LatLng(lat, lng);
+}
+
+// ─────────────────────────────────────────────
+// REPORT DATABASE SERVICE
+// ─────────────────────────────────────────────
+
+class ReportDatabase {
+  static const String _permanentKey = 'speed_cameras';
+  static const String _tempKey = 'temp_reports';
+
+  /// Load all non-expired reports from storage.
+  static Future<List<ReportedLocation>> loadAll() async {
+    final prefs = await SharedPreferences.getInstance();
+    final List<ReportedLocation> all = [];
+
+    // Load permanent speed cameras
+    final String? permanentJson = prefs.getString(_permanentKey);
+    if (permanentJson != null) {
+      final List<dynamic> decoded = json.decode(permanentJson);
+      all.addAll(decoded.map((e) => ReportedLocation.fromJson(e)));
+    }
+
+    // Load temporary reports (and purge expired ones)
+    final String? tempJson = prefs.getString(_tempKey);
+    if (tempJson != null) {
+      final List<dynamic> decoded = json.decode(tempJson);
+      final List<ReportedLocation> tempReports =
+          decoded.map((e) => ReportedLocation.fromJson(e)).toList();
+
+      // Filter out expired
+      final active = tempReports.where((r) => !r.isExpired).toList();
+
+      // If we pruned any, save the cleaned list back
+      if (active.length != tempReports.length) {
+        await prefs.setString(
+            _tempKey, json.encode(active.map((e) => e.toJson()).toList()));
+      }
+
+      all.addAll(active);
+    }
+
+    return all;
+  }
+
+  /// Save a new report. Permanent reports go to their own bucket; temp to theirs.
+  static Future<void> save(ReportedLocation report) async {
+    final prefs = await SharedPreferences.getInstance();
+
+    if (report.isPermanent) {
+      final String? existing = prefs.getString(_permanentKey);
+      final List<dynamic> decoded =
+          existing != null ? json.decode(existing) : [];
+      final List<ReportedLocation> list =
+          decoded.map((e) => ReportedLocation.fromJson(e)).toList();
+      list.add(report);
+      await prefs.setString(
+          _permanentKey, json.encode(list.map((e) => e.toJson()).toList()));
+    } else {
+      final String? existing = prefs.getString(_tempKey);
+      final List<dynamic> decoded =
+          existing != null ? json.decode(existing) : [];
+      final List<ReportedLocation> list = decoded
+          .map((e) => ReportedLocation.fromJson(e))
+          .where((r) => !r.isExpired)
+          .toList();
+      list.add(report);
+      await prefs.setString(
+          _tempKey, json.encode(list.map((e) => e.toJson()).toList()));
+    }
+  }
+
+  /// Delete a permanent speed camera by id.
+  static Future<void> deletePermanent(String id) async {
+    final prefs = await SharedPreferences.getInstance();
+    final String? existing = prefs.getString(_permanentKey);
+    if (existing == null) return;
+    final List<dynamic> decoded = json.decode(existing);
+    final List<ReportedLocation> list = decoded
+        .map((e) => ReportedLocation.fromJson(e))
+        .where((r) => r.id != id)
+        .toList();
+    await prefs.setString(
+        _permanentKey, json.encode(list.map((e) => e.toJson()).toList()));
+  }
+
+  /// Returns reports within [radiusMeters] of a given point.
+  static List<ReportedLocation> nearby(
+      List<ReportedLocation> reports, LatLng center, double radiusMeters) {
+    return reports.where((r) {
+      final dist = Geolocator.distanceBetween(
+          center.latitude, center.longitude, r.lat, r.lng);
+      return dist <= radiusMeters;
+    }).toList();
+  }
+}
+
+// ─────────────────────────────────────────────
+// MAIN HOME SCREEN
+// ─────────────────────────────────────────────
 
 class MainHomeScreen extends StatefulWidget {
   const MainHomeScreen({super.key});
@@ -58,6 +416,17 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
 
   List<SavedRoute> _savedRoutes = [];
 
+  // Reported locations (cameras + temp incidents)
+  List<ReportedLocation> _reportedLocations = [];
+
+  // Proximity alert tracking (avoid repeat alerts for same report)
+  final Set<String> _alertedReportIds = {};
+
+  // Custom marker icons (generated once at startup)
+  BitmapDescriptor? _cameraIcon;
+  BitmapDescriptor? _accidentIcon;
+  BitmapDescriptor? _trafficIcon;
+
   // Live Location Tracking
   StreamSubscription<Position>? _positionStreamSubscription;
   bool _isNavigating = false;
@@ -68,15 +437,27 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
     super.initState();
     _requestLocation();
     _loadSavedRoutes();
+    _loadReportedLocations();
+    _generateMarkerIcons();
+  }
+
+  Future<void> _generateMarkerIcons() async {
+    _cameraIcon = await MarkerIconPainter.cameraIcon();
+    _accidentIcon = await MarkerIconPainter.warningIcon();
+    _trafficIcon = await MarkerIconPainter.trafficIcon();
+    // Re-draw markers now that icons are ready
+    if (mounted) _refreshReportMarkers();
   }
 
   @override
   void dispose() {
     _sourceController.dispose();
     _destController.dispose();
-    _positionStreamSubscription?.cancel(); // Cancel location stream
+    _positionStreamSubscription?.cancel();
     super.dispose();
   }
+
+  // ── Location Permission & Init ──────────────
 
   Future<void> _requestLocation() async {
     final status = await Permission.location.request();
@@ -101,6 +482,138 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
     });
   }
 
+  // ── Report DB ───────────────────────────────
+
+  Future<void> _loadReportedLocations() async {
+    final reports = await ReportDatabase.loadAll();
+    setState(() {
+      _reportedLocations = reports;
+    });
+    _refreshReportMarkers();
+  }
+
+  /// Builds map markers for all stored reports using custom shaped icons.
+  void _refreshReportMarkers() {
+    // Remove old report markers
+    _markers.removeWhere((m) => m.markerId.value.startsWith('report_'));
+
+    for (final report in _reportedLocations) {
+      if (report.isExpired) continue;
+
+      BitmapDescriptor icon;
+      switch (report.type) {
+        case 'Speed Camera':
+          icon = _cameraIcon ??
+              BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueViolet);
+          break;
+        case 'Accident':
+          icon = _accidentIcon ??
+              BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueOrange);
+          break;
+        case 'Traffic Jam':
+          icon = _trafficIcon ??
+              BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueYellow);
+          break;
+        default:
+          icon = BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueRed);
+      }
+
+      final expiryText = report.isPermanent
+          ? 'Permanent'
+          : 'Expires in ${_remainingMinutes(report)} min';
+
+      _markers.add(
+        Marker(
+          markerId: MarkerId('report_${report.id}'),
+          position: report.latLng,
+          icon: icon,
+          anchor: const Offset(0.5, 1.0),
+          infoWindow: InfoWindow(
+            title: '${_emojiFor(report.type)} ${report.type}',
+            snippet: expiryText,
+          ),
+          onTap: () => _onReportMarkerTapped(report),
+        ),
+      );
+    }
+
+    if (mounted) setState(() {});
+  }
+
+  int _remainingMinutes(ReportedLocation report) {
+    if (report.isPermanent) return -1;
+    final elapsed = DateTime.now().difference(report.reportedAt).inMinutes;
+    return (120 - elapsed).clamp(0, 120);
+  }
+
+  void _onReportMarkerTapped(ReportedLocation report) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('${_emojiFor(report.type)} ${report.type}'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Reported: ${_formatTime(report.reportedAt)}'),
+            const SizedBox(height: 4),
+            Text(
+              report.isPermanent
+                  ? 'Permanent record'
+                  : 'Expires in ${_remainingMinutes(report)} minutes',
+              style: TextStyle(
+                  color: report.isPermanent ? Colors.purple : Colors.orange),
+            ),
+          ],
+        ),
+        actions: [
+          if (report.isPermanent)
+            TextButton(
+              onPressed: () async {
+                await ReportDatabase.deletePermanent(report.id);
+                setState(() {
+                  _reportedLocations.removeWhere((r) => r.id == report.id);
+                });
+                _refreshReportMarkers();
+                if (mounted) Navigator.pop(ctx);
+                _showSnackBar('Speed camera removed');
+              },
+              style: TextButton.styleFrom(foregroundColor: Colors.red),
+              child: const Text('Remove'),
+            ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  String _emojiFor(String type) {
+    switch (type) {
+      case 'Speed Camera':
+        return '📷';
+      case 'Accident':
+        return '🚨';
+      case 'Traffic Jam':
+        return '🚦';
+      default:
+        return '⚠️';
+    }
+  }
+
+  String _formatTime(DateTime dt) {
+    final now = DateTime.now();
+    final diff = now.difference(dt);
+    if (diff.inMinutes < 1) return 'Just now';
+    if (diff.inMinutes < 60) return '${diff.inMinutes} min ago';
+    if (diff.inHours < 24) return '${diff.inHours} hr ago';
+    return '${dt.day}/${dt.month}/${dt.year}';
+  }
+
+  // ── Map Tap ─────────────────────────────────
+
   void _onMapTapped(LatLng position) {
     setState(() {
       _destinationLocation = position;
@@ -116,6 +629,8 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
     });
     _getDirections();
   }
+
+  // ── Directions ──────────────────────────────
 
   Future<void> _getDirections() async {
     if (_startLocation == null || _destinationLocation == null) return;
@@ -164,6 +679,9 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
           });
 
           _fitMapToRoute();
+
+          // Show how many alerts are on the route
+          _announceRouteAlerts();
         }
       } else if (response.statusCode == 401) {
         _showSnackBar(
@@ -172,15 +690,43 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
         _showSnackBar('Error getting route: ${response.statusCode}');
       }
     } catch (e) {
-      print('Error getting directions: $e');
       _showSnackBar('Error getting route. Check internet and API key.');
     }
   }
 
+  /// After loading a route, notify the user of any saved alerts on it.
+  void _announceRouteAlerts() {
+    final alerts = _reportedLocations.where((r) {
+      if (r.isExpired) return false;
+      // Check if this report is within 200m of any route point
+      return _routePoints.any((pt) {
+        final dist =
+            Geolocator.distanceBetween(pt.latitude, pt.longitude, r.lat, r.lng);
+        return dist <= 200;
+      });
+    }).toList();
+
+    if (alerts.isEmpty) return;
+
+    final cameras = alerts.where((a) => a.type == 'Speed Camera').length;
+    final accidents = alerts.where((a) => a.type == 'Accident').length;
+    final traffic = alerts.where((a) => a.type == 'Traffic Jam').length;
+
+    final parts = <String>[];
+    if (cameras > 0)
+      parts.add('$cameras speed camera${cameras > 1 ? 's' : ''}');
+    if (accidents > 0)
+      parts.add('$accidents accident${accidents > 1 ? 's' : ''}');
+    if (traffic > 0) parts.add('$traffic traffic jam${traffic > 1 ? 's' : ''}');
+
+    _showSnackBar('⚠️ Route has: ${parts.join(', ')}');
+  }
+
+  // ── Geocoding / Search ──────────────────────
+
   Future<LatLng?> _searchLocation(String query) async {
     if (query.trim().isEmpty) return null;
 
-    // First try: exact search
     final String url1 = 'https://api.openrouteservice.org/geocode/search?'
         'api_key=$_openRouteApiKey&'
         'text=${Uri.encodeComponent(query)}&'
@@ -188,30 +734,24 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
 
     try {
       final response1 = await http.get(Uri.parse(url1));
-
       if (response1.statusCode == 200) {
         final data1 = json.decode(response1.body);
-
         if (data1['features'] != null && data1['features'].isNotEmpty) {
           final coords = data1['features'][0]['geometry']['coordinates'];
           return LatLng(coords[1], coords[0]);
         }
       }
 
-      // Second try: add "India" if not found
       if (!query.toLowerCase().contains('india') &&
           !query.toLowerCase().contains('mumbai') &&
           !query.toLowerCase().contains('delhi')) {
         final String url2 = 'https://api.openrouteservice.org/geocode/search?'
             'api_key=$_openRouteApiKey&'
-            'text=${Uri.encodeComponent(query + " India")}&'
+            'text=${Uri.encodeComponent("$query India")}&'
             'size=1';
-
         final response2 = await http.get(Uri.parse(url2));
-
         if (response2.statusCode == 200) {
           final data2 = json.decode(response2.body);
-
           if (data2['features'] != null && data2['features'].isNotEmpty) {
             final coords = data2['features'][0]['geometry']['coordinates'];
             _showSnackBar('Found: $query, India');
@@ -220,7 +760,6 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
         }
       }
 
-      // Third try: add "Mumbai India" for common Mumbai suburbs
       final mumbaiSuburbs = [
         'dombivli',
         'kurla',
@@ -233,18 +772,14 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
         'dadar',
         'kalyan'
       ];
-
       if (mumbaiSuburbs.any((s) => query.toLowerCase().contains(s))) {
         final String url3 = 'https://api.openrouteservice.org/geocode/search?'
             'api_key=$_openRouteApiKey&'
-            'text=${Uri.encodeComponent(query + " Mumbai India")}&'
+            'text=${Uri.encodeComponent("$query Mumbai India")}&'
             'size=1';
-
         final response3 = await http.get(Uri.parse(url3));
-
         if (response3.statusCode == 200) {
           final data3 = json.decode(response3.body);
-
           if (data3['features'] != null && data3['features'].isNotEmpty) {
             final coords = data3['features'][0]['geometry']['coordinates'];
             _showSnackBar('Found: $query, Mumbai');
@@ -253,24 +788,20 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
         }
       }
     } catch (e) {
-      print('Error searching location: $e');
+      // silent
     }
-
     return null;
   }
 
   Future<void> _searchAndSetSource(String query) async {
     if (query.isEmpty) return;
-
     _showSnackBar('Searching for source location...');
-
     final location = await _searchLocation(query);
     if (location != null) {
       setState(() {
         _startLocation = location;
         _startAddress = query;
         _useCurrentLocation = false;
-
         _markers.removeWhere((m) => m.markerId.value == 'start');
         _markers.add(
           Marker(
@@ -282,13 +813,9 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
           ),
         );
       });
-
       _mapController?.animateCamera(CameraUpdate.newLatLngZoom(location, 14));
       _showSnackBar('Source location set!');
-
-      if (_destinationLocation != null) {
-        _getDirections();
-      }
+      if (_destinationLocation != null) _getDirections();
     } else {
       _showSnackBar(
           'Location not found. Try: "$query Mumbai" or "$query India"');
@@ -297,15 +824,12 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
 
   Future<void> _searchAndSetDestination(String query) async {
     if (query.isEmpty) return;
-
     _showSnackBar('Searching for destination...');
-
     final location = await _searchLocation(query);
     if (location != null) {
       setState(() {
         _destinationLocation = location;
         _destinationAddress = query;
-
         _markers.removeWhere((m) => m.markerId.value == 'destination');
         _markers.add(
           Marker(
@@ -317,12 +841,8 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
           ),
         );
       });
-
       _showSnackBar('Destination set!');
-
-      if (_startLocation != null) {
-        _getDirections();
-      }
+      if (_startLocation != null) _getDirections();
     } else {
       _showSnackBar(
           'Location not found. Try: "$query Mumbai" or "$query India"');
@@ -337,7 +857,6 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
         _startAddress = "Current Location";
         _useCurrentLocation = true;
         _sourceController.clear();
-
         _markers.removeWhere((m) => m.markerId.value == 'start');
         _markers.add(
           Marker(
@@ -349,21 +868,18 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
           ),
         );
       });
-
       _mapController
           ?.animateCamera(CameraUpdate.newLatLngZoom(_startLocation!, 14));
-
-      if (_destinationLocation != null) {
-        _getDirections();
-      }
+      if (_destinationLocation != null) _getDirections();
     }
   }
 
-  // Start Live Location Tracking
+  // ── Live Tracking ───────────────────────────
+
   void _startLiveTracking() {
     const LocationSettings locationSettings = LocationSettings(
       accuracy: LocationAccuracy.high,
-      distanceFilter: 10, // Update every 10 meters
+      distanceFilter: 10,
     );
 
     _positionStreamSubscription = Geolocator.getPositionStream(
@@ -371,13 +887,10 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
     ).listen((Position position) {
       setState(() {
         _currentPosition = position;
-
-        // Calculate speed from GPS (m/s to km/h)
         if (position.speed > 0) {
           _currentSpeed = (position.speed * 3.6).round();
         }
 
-        // Update current location marker
         _markers.removeWhere((m) => m.markerId.value == 'current');
         _markers.add(
           Marker(
@@ -385,21 +898,22 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
             position: LatLng(position.latitude, position.longitude),
             icon: BitmapDescriptor.defaultMarkerWithHue(
                 BitmapDescriptor.hueAzure),
-            infoWindow: InfoWindow(title: 'You (${_currentSpeed} km/h)'),
+            infoWindow: InfoWindow(title: 'You ($_currentSpeed km/h)'),
             anchor: const Offset(0.5, 0.5),
-            rotation: position.heading, // Rotate marker based on direction
+            rotation: position.heading,
           ),
         );
 
-        // Auto-follow user location if enabled
         if (_followUserLocation && _mapController != null) {
           _mapController!.animateCamera(
             CameraUpdate.newLatLng(
-              LatLng(position.latitude, position.longitude),
-            ),
+                LatLng(position.latitude, position.longitude)),
           );
         }
       });
+
+      // Check proximity to saved reports while navigating
+      _checkProximityAlerts(LatLng(position.latitude, position.longitude));
     });
 
     setState(() {
@@ -407,16 +921,34 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
     });
   }
 
-  // Stop Live Location Tracking
+  /// Alert the user if they are within 150m of a saved report they haven't been alerted about yet.
+  void _checkProximityAlerts(LatLng currentPos) {
+    final nearby = ReportDatabase.nearby(_reportedLocations, currentPos, 150);
+    for (final report in nearby) {
+      if (_alertedReportIds.contains(report.id)) continue;
+      _alertedReportIds.add(report.id);
+
+      final msg = '${_emojiFor(report.type)} ${report.type} ahead in ~150m!';
+      setState(() {
+        _notifications.insert(0, msg);
+      });
+      Future.delayed(const Duration(seconds: 6), () {
+        if (mounted && _notifications.isNotEmpty) {
+          setState(() => _notifications.remove(msg));
+        }
+      });
+    }
+  }
+
   void _stopLiveTracking() {
     _positionStreamSubscription?.cancel();
+    _alertedReportIds.clear();
     setState(() {
       _isNavigating = false;
       _markers.removeWhere((m) => m.markerId.value == 'current');
     });
   }
 
-  // Toggle navigation mode
   void _toggleNavigation() {
     if (_isNavigating) {
       _stopLiveTracking();
@@ -427,9 +959,31 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
         return;
       }
       _startLiveTracking();
-      _showSnackBar('Navigation started - Following your location');
+
+      // Zoom into user's current location with a driving-style view
+      // so they can see which direction they need to go
+      if (_currentPosition != null && _mapController != null) {
+        _mapController!.animateCamera(
+          CameraUpdate.newCameraPosition(
+            CameraPosition(
+              target: LatLng(
+                _currentPosition!.latitude,
+                _currentPosition!.longitude,
+              ),
+              zoom: 17.5,
+              tilt: 45,
+              bearing:
+                  _currentPosition!.heading, // face the direction of travel
+            ),
+          ),
+        );
+      }
+
+      _showSnackBar('Navigation started – zoom out anytime to see full route');
     }
   }
+
+  // ── Map Fit ─────────────────────────────────
 
   void _fitMapToRoute() {
     if (_routePoints.isEmpty || _mapController == null) return;
@@ -457,20 +1011,50 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
     );
   }
 
-  void _addReport(String type) async {
-    String reportEntry = "$type reported nearby";
+  // ── Report Submission ───────────────────────
+
+  Future<void> _addReport(String type) async {
+    if (_currentPosition == null) {
+      _showSnackBar('Waiting for GPS location...');
+      return;
+    }
+
+    final bool isPermanent = (type == 'Speed Camera');
+    final report = ReportedLocation(
+      id: '${type}_${DateTime.now().millisecondsSinceEpoch}',
+      type: type,
+      lat: _currentPosition!.latitude,
+      lng: _currentPosition!.longitude,
+      reportedAt: DateTime.now(),
+      isPermanent: isPermanent,
+    );
+
+    await ReportDatabase.save(report);
 
     setState(() {
-      _communityReports.insert(0, {"text": reportEntry, "time": "Just now"});
-      _notifications.add("$type detected on your route!");
+      _reportedLocations.add(report);
+      _communityReports.insert(0, {
+        "text": "$type reported nearby",
+        "time": "Just now",
+        "type": type,
+      });
+      _notifications.insert(
+          0, '${_emojiFor(type)} $type saved at your location!');
     });
+
+    _refreshReportMarkers();
 
     Future.delayed(const Duration(seconds: 4), () {
       if (mounted && _notifications.isNotEmpty) {
         setState(() => _notifications.removeAt(0));
       }
     });
+
+    final persist = isPermanent ? 'Saved permanently' : 'Saved for 2 hours';
+    _showSnackBar('$type reported. $persist.');
   }
+
+  // ── Saved Routes ────────────────────────────
 
   Future<void> _loadSavedRoutes() async {
     final prefs = await SharedPreferences.getInstance();
@@ -507,7 +1091,6 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
     final String encoded =
         json.encode(_savedRoutes.map((e) => e.toJson()).toList());
     await prefs.setString('saved_routes', encoded);
-
     _showSnackBar('Route saved as "$name"');
   }
 
@@ -518,7 +1101,8 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
       _startAddress = route.startAddress;
       _destinationAddress = route.destAddress;
 
-      _markers.clear();
+      _markers.removeWhere((m) =>
+          m.markerId.value == 'start' || m.markerId.value == 'destination');
       _markers.add(
         Marker(
           markerId: const MarkerId('start'),
@@ -539,19 +1123,16 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
     });
 
     await _getDirections();
-    Navigator.pop(context);
+    if (mounted) Navigator.pop(context);
   }
 
   Future<void> _deleteRoute(int index) async {
     setState(() {
       _savedRoutes.removeAt(index);
     });
-
     final prefs = await SharedPreferences.getInstance();
-    final String encoded =
-        json.encode(_savedRoutes.map((e) => e.toJson()).toList());
-    await prefs.setString('saved_routes', encoded);
-
+    await prefs.setString('saved_routes',
+        json.encode(_savedRoutes.map((e) => e.toJson()).toList()));
     _showSnackBar('Route deleted');
   }
 
@@ -560,7 +1141,6 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
       _showSnackBar('Please select both start and destination locations');
       return;
     }
-
     String routeName = '';
     showDialog(
       context: context,
@@ -593,9 +1173,11 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
     );
   }
 
+  // ── Snack Bar / Modals ──────────────────────
+
   void _showSnackBar(String message) {
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(message), duration: const Duration(seconds: 2)),
+      SnackBar(content: Text(message), duration: const Duration(seconds: 3)),
     );
   }
 
@@ -624,14 +1206,14 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
         onToggleCurrentLocation: (value) {
           setState(() {
             _useCurrentLocation = value;
-            if (value) {
-              _useMyLocation();
-            }
+            if (value) _useMyLocation();
           });
         },
       ),
     );
   }
+
+  // ── Build ───────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
@@ -675,6 +1257,19 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
             ),
             const Divider(),
             ListTile(
+              leading: const Icon(Icons.camera_alt, color: Colors.purple),
+              title: const Text('Saved Speed Cameras'),
+              trailing: Badge(
+                label: Text(
+                    '${_reportedLocations.where((r) => r.isPermanent).length}'),
+                child: const Icon(Icons.arrow_forward_ios, size: 16),
+              ),
+              onTap: () {
+                Navigator.pop(context);
+                _showSavedCamerasScreen();
+              },
+            ),
+            ListTile(
               leading: const Icon(Icons.people, color: Colors.orange),
               title: const Text('Community Reports'),
               onTap: () {
@@ -685,9 +1280,7 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
             ListTile(
               leading: const Icon(Icons.settings),
               title: const Text('Settings'),
-              onTap: () {
-                Navigator.pop(context);
-              },
+              onTap: () => Navigator.pop(context),
             ),
           ],
         ),
@@ -708,7 +1301,10 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
                   myLocationEnabled: true,
                   myLocationButtonEnabled: false,
                   onTap: _onMapTapped,
-                  onMapCreated: (controller) => _mapController = controller,
+                  onMapCreated: (controller) {
+                    _mapController = controller;
+                    _refreshReportMarkers();
+                  },
                 ),
 
           // FLOATING MENU BUTTON
@@ -790,9 +1386,7 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
                                   child: Text(
                                     _destinationAddress,
                                     style: TextStyle(
-                                      fontSize: 12,
-                                      color: Colors.grey[700],
-                                    ),
+                                        fontSize: 12, color: Colors.grey[700]),
                                     maxLines: 1,
                                     overflow: TextOverflow.ellipsis,
                                   ),
@@ -870,7 +1464,7 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
                     startAddress: _startAddress,
                     destinationAddress: _destinationAddress,
                     onClear: () {
-                      _stopLiveTracking(); // Stop tracking when route cleared
+                      _stopLiveTracking();
                       setState(() {
                         _polylines.clear();
                         _routePoints.clear();
@@ -882,7 +1476,6 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
                       });
                     },
                   ),
-                  // Navigation Status Indicator
                   if (_isNavigating)
                     Container(
                       margin: const EdgeInsets.only(top: 8),
@@ -906,7 +1499,7 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
                               color: Colors.white, size: 16),
                           const SizedBox(width: 8),
                           Text(
-                            'Navigating • ${_currentSpeed} km/h',
+                            'Navigating • $_currentSpeed km/h',
                             style: const TextStyle(
                               color: Colors.white,
                               fontWeight: FontWeight.bold,
@@ -1002,6 +1595,8 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
     );
   }
 
+  // ── Community & Camera screens ──────────────
+
   void _showCommunityDialog() {
     showDialog(
       context: context,
@@ -1014,11 +1609,15 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
               : ListView.builder(
                   shrinkWrap: true,
                   itemCount: _communityReports.length,
-                  itemBuilder: (context, i) => ListTile(
-                    leading: const Icon(Icons.report, color: Colors.orange),
-                    title: Text(_communityReports[i]['text']),
-                    subtitle: Text(_communityReports[i]['time']),
-                  ),
+                  itemBuilder: (context, i) {
+                    final r = _communityReports[i];
+                    return ListTile(
+                      leading: Text(_emojiFor(r['type'] ?? ''),
+                          style: const TextStyle(fontSize: 22)),
+                      title: Text(r['text']),
+                      subtitle: Text(r['time']),
+                    );
+                  },
                 ),
         ),
         actions: [
@@ -1043,11 +1642,223 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
       ),
     );
   }
+
+  void _showSavedCamerasScreen() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => SavedCamerasScreen(
+          reportedLocations: _reportedLocations,
+          onDelete: (id) async {
+            await ReportDatabase.deletePermanent(id);
+            setState(() {
+              _reportedLocations.removeWhere((r) => r.id == id);
+            });
+            _refreshReportMarkers();
+          },
+          onGoTo: (report) {
+            _mapController?.animateCamera(
+              CameraUpdate.newLatLngZoom(report.latLng, 16),
+            );
+            Navigator.pop(context);
+          },
+        ),
+      ),
+    );
+  }
 }
 
-//////////////////////////////////////////////////////////
-/// SEARCH MODAL WIDGET
-//////////////////////////////////////////////////////////
+// ─────────────────────────────────────────────
+// SAVED CAMERAS SCREEN
+// ─────────────────────────────────────────────
+
+class SavedCamerasScreen extends StatelessWidget {
+  final List<ReportedLocation> reportedLocations;
+  final Function(String id) onDelete;
+  final Function(ReportedLocation) onGoTo;
+
+  const SavedCamerasScreen({
+    super.key,
+    required this.reportedLocations,
+    required this.onDelete,
+    required this.onGoTo,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final cameras = reportedLocations.where((r) => r.isPermanent).toList();
+    final temp =
+        reportedLocations.where((r) => !r.isPermanent && !r.isExpired).toList();
+
+    return DefaultTabController(
+      length: 2,
+      child: Scaffold(
+        appBar: AppBar(
+          title: const Text('Saved Reports'),
+          backgroundColor: Colors.blue,
+          foregroundColor: Colors.white,
+          bottom: const TabBar(
+            labelColor: Colors.white,
+            unselectedLabelColor: Colors.white70,
+            indicatorColor: Colors.white,
+            tabs: [
+              Tab(icon: Icon(Icons.camera_alt), text: 'Speed Cameras'),
+              Tab(icon: Icon(Icons.warning_amber), text: 'Temp Incidents'),
+            ],
+          ),
+        ),
+        body: TabBarView(
+          children: [
+            _buildList(context, cameras, isPermanentTab: true),
+            _buildList(context, temp, isPermanentTab: false),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildList(BuildContext context, List<ReportedLocation> items,
+      {required bool isPermanentTab}) {
+    if (items.isEmpty) {
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(
+              isPermanentTab ? Icons.camera_alt : Icons.warning_amber,
+              size: 64,
+              color: Colors.grey[300],
+            ),
+            const SizedBox(height: 12),
+            Text(
+              isPermanentTab
+                  ? 'No speed cameras saved yet'
+                  : 'No active incidents',
+              style: TextStyle(fontSize: 16, color: Colors.grey[600]),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              isPermanentTab
+                  ? 'Use the 📷 report button while driving'
+                  : 'Accidents & traffic jams expire after 2 hours',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: Colors.grey[500], fontSize: 13),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return ListView.builder(
+      itemCount: items.length,
+      itemBuilder: (ctx, index) {
+        final r = items[index];
+        final remaining =
+            r.isPermanent ? 'Permanent' : 'Expires in ${_rem(r)} min';
+
+        return Card(
+          margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+          child: ListTile(
+            leading: CircleAvatar(
+              backgroundColor: _colorFor(r.type),
+              child:
+                  Text(_emojiFor(r.type), style: const TextStyle(fontSize: 18)),
+            ),
+            title: Text(r.type,
+                style: const TextStyle(fontWeight: FontWeight.bold)),
+            subtitle: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                    'Lat: ${r.lat.toStringAsFixed(5)}, Lng: ${r.lng.toStringAsFixed(5)}',
+                    style: const TextStyle(fontSize: 11)),
+                Text(remaining,
+                    style: TextStyle(
+                        fontSize: 11,
+                        color: r.isPermanent ? Colors.purple : Colors.orange)),
+              ],
+            ),
+            trailing: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                IconButton(
+                  icon: const Icon(Icons.map, color: Colors.blue),
+                  onPressed: () => onGoTo(r),
+                  tooltip: 'Show on map',
+                ),
+                if (r.isPermanent)
+                  IconButton(
+                    icon: const Icon(Icons.delete, color: Colors.red),
+                    onPressed: () {
+                      showDialog(
+                        context: ctx,
+                        builder: (dCtx) => AlertDialog(
+                          title: const Text('Remove Speed Camera?'),
+                          content: const Text(
+                              'This will permanently delete this camera record.'),
+                          actions: [
+                            TextButton(
+                              onPressed: () => Navigator.pop(dCtx),
+                              child: const Text('Cancel'),
+                            ),
+                            ElevatedButton(
+                              style: ElevatedButton.styleFrom(
+                                  backgroundColor: Colors.red),
+                              onPressed: () {
+                                onDelete(r.id);
+                                Navigator.pop(dCtx);
+                              },
+                              child: const Text('Delete'),
+                            ),
+                          ],
+                        ),
+                      );
+                    },
+                    tooltip: 'Delete',
+                  ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  int _rem(ReportedLocation r) {
+    final elapsed = DateTime.now().difference(r.reportedAt).inMinutes;
+    return (120 - elapsed).clamp(0, 120);
+  }
+
+  String _emojiFor(String type) {
+    switch (type) {
+      case 'Speed Camera':
+        return '📷';
+      case 'Accident':
+        return '🚨';
+      case 'Traffic Jam':
+        return '🚦';
+      default:
+        return '⚠️';
+    }
+  }
+
+  Color _colorFor(String type) {
+    switch (type) {
+      case 'Speed Camera':
+        return Colors.purple.shade100;
+      case 'Accident':
+        return Colors.orange.shade100;
+      case 'Traffic Jam':
+        return Colors.amber.shade100;
+      default:
+        return Colors.grey.shade200;
+    }
+  }
+}
+
+// ─────────────────────────────────────────────
+// SEARCH MODAL WIDGET
+// ─────────────────────────────────────────────
 
 class SearchModal extends StatefulWidget {
   final TextEditingController sourceController;
@@ -1087,9 +1898,8 @@ class _SearchModalState extends State<SearchModal> {
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: EdgeInsets.only(
-        bottom: MediaQuery.of(context).viewInsets.bottom,
-      ),
+      padding:
+          EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
       decoration: const BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.only(
@@ -1100,7 +1910,6 @@ class _SearchModalState extends State<SearchModal> {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          // Handle bar
           Container(
             margin: const EdgeInsets.only(top: 12),
             width: 40,
@@ -1110,33 +1919,21 @@ class _SearchModalState extends State<SearchModal> {
               borderRadius: BorderRadius.circular(2),
             ),
           ),
-
           Padding(
             padding: const EdgeInsets.all(20),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text(
-                  'Set Your Route',
-                  style: TextStyle(
-                    fontSize: 20,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
+                const Text('Set Your Route',
+                    style:
+                        TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
                 const SizedBox(height: 20),
-
-                // SOURCE LOCATION
-                const Text(
-                  'Start Location',
-                  style: TextStyle(
-                    fontSize: 14,
-                    fontWeight: FontWeight.w600,
-                    color: Colors.black87,
-                  ),
-                ),
+                const Text('Start Location',
+                    style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w600,
+                        color: Colors.black87)),
                 const SizedBox(height: 8),
-
-                // Toggle for current location
                 Container(
                   padding:
                       const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
@@ -1158,30 +1955,22 @@ class _SearchModalState extends State<SearchModal> {
                           _useCurrentLoc
                               ? widget.currentAddress
                               : 'Search location',
-                          style: TextStyle(
-                            fontSize: 14,
-                            color: Colors.grey[800],
-                          ),
+                          style:
+                              TextStyle(fontSize: 14, color: Colors.grey[800]),
                         ),
                       ),
                       Switch(
                         value: _useCurrentLoc,
                         activeColor: Colors.green,
                         onChanged: (value) {
-                          setState(() {
-                            _useCurrentLoc = value;
-                          });
+                          setState(() => _useCurrentLoc = value);
                           widget.onToggleCurrentLocation(value);
-                          if (value) {
-                            widget.onUseMyLocation();
-                          }
+                          if (value) widget.onUseMyLocation();
                         },
                       ),
                     ],
                   ),
                 ),
-
-                // SOURCE SEARCH (if not using current location)
                 if (!_useCurrentLoc) ...[
                   const SizedBox(height: 12),
                   Container(
@@ -1209,26 +1998,18 @@ class _SearchModalState extends State<SearchModal> {
                           },
                         ),
                       ),
-                      onSubmitted: (value) {
-                        if (value.isNotEmpty) {
-                          widget.onSearchSource(value);
-                        }
+                      onSubmitted: (v) {
+                        if (v.isNotEmpty) widget.onSearchSource(v);
                       },
                     ),
                   ),
                 ],
-
                 const SizedBox(height: 24),
-
-                // DESTINATION LOCATION
-                const Text(
-                  'Destination',
-                  style: TextStyle(
-                    fontSize: 14,
-                    fontWeight: FontWeight.w600,
-                    color: Colors.black87,
-                  ),
-                ),
+                const Text('Destination',
+                    style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w600,
+                        color: Colors.black87)),
                 const SizedBox(height: 8),
                 Container(
                   decoration: BoxDecoration(
@@ -1255,17 +2036,12 @@ class _SearchModalState extends State<SearchModal> {
                         },
                       ),
                     ),
-                    onSubmitted: (value) {
-                      if (value.isNotEmpty) {
-                        widget.onSearchDestination(value);
-                      }
+                    onSubmitted: (v) {
+                      if (v.isNotEmpty) widget.onSearchDestination(v);
                     },
                   ),
                 ),
-
                 const SizedBox(height: 20),
-
-                // SEARCH BUTTON
                 SizedBox(
                   width: double.infinity,
                   child: ElevatedButton(
@@ -1288,17 +2064,13 @@ class _SearchModalState extends State<SearchModal> {
                       backgroundColor: Colors.blue,
                       padding: const EdgeInsets.symmetric(vertical: 16),
                       shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12),
-                      ),
+                          borderRadius: BorderRadius.circular(12)),
                     ),
-                    child: const Text(
-                      'Search Route',
-                      style:
-                          TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-                    ),
+                    child: const Text('Search Route',
+                        style: TextStyle(
+                            fontSize: 16, fontWeight: FontWeight.bold)),
                   ),
                 ),
-
                 const SizedBox(height: 10),
               ],
             ),
@@ -1309,7 +2081,9 @@ class _SearchModalState extends State<SearchModal> {
   }
 }
 
-// [Rest of the components - SavedRoute, RouteInfoCard, SpeedGauge, etc. remain the same]
+// ─────────────────────────────────────────────
+// DATA CLASS: SavedRoute
+// ─────────────────────────────────────────────
 
 class SavedRoute {
   final String name;
@@ -1350,6 +2124,10 @@ class SavedRoute {
         destAddress: json['destAddress'],
       );
 }
+
+// ─────────────────────────────────────────────
+// WIDGET: RouteInfoCard
+// ─────────────────────────────────────────────
 
 class RouteInfoCard extends StatelessWidget {
   final String startAddress;
@@ -1422,6 +2200,10 @@ class RouteInfoCard extends StatelessWidget {
     );
   }
 }
+
+// ─────────────────────────────────────────────
+// WIDGET: SpeedGauge
+// ─────────────────────────────────────────────
 
 class SpeedGauge extends StatefulWidget {
   final int speed;
@@ -1497,6 +2279,10 @@ class _SpeedGaugeState extends State<SpeedGauge>
   }
 }
 
+// ─────────────────────────────────────────────
+// WIDGET: LiveNotification
+// ─────────────────────────────────────────────
+
 class LiveNotification extends StatelessWidget {
   final String message;
   const LiveNotification({super.key, required this.message});
@@ -1520,6 +2306,10 @@ class LiveNotification extends StatelessWidget {
   }
 }
 
+// ─────────────────────────────────────────────
+// WIDGET: ExpandableReportButton
+// ─────────────────────────────────────────────
+
 class ExpandableReportButton extends StatefulWidget {
   final Function(String) onReport;
   const ExpandableReportButton({super.key, required this.onReport});
@@ -1537,7 +2327,7 @@ class _ExpandableReportButtonState extends State<ExpandableReportButton> {
       mainAxisSize: MainAxisSize.min,
       children: [
         if (_isOpen) ...[
-          _reportIcon(Icons.camera_alt, "Speed Camera", Colors.red),
+          _reportIcon(Icons.camera_alt, "Speed Camera", Colors.purple),
           _reportIcon(Icons.car_crash, "Accident", Colors.orange),
           _reportIcon(Icons.traffic, "Traffic Jam", Colors.amber),
         ],
@@ -1554,6 +2344,7 @@ class _ExpandableReportButtonState extends State<ExpandableReportButton> {
     return Padding(
       padding: const EdgeInsets.only(bottom: 12),
       child: FloatingActionButton.small(
+        heroTag: label,
         backgroundColor: color,
         onPressed: () {
           widget.onReport(label);
@@ -1564,6 +2355,10 @@ class _ExpandableReportButtonState extends State<ExpandableReportButton> {
     );
   }
 }
+
+// ─────────────────────────────────────────────
+// SCREEN: SavedRoutesScreen
+// ─────────────────────────────────────────────
 
 class SavedRoutesScreen extends StatelessWidget {
   final List<SavedRoute> savedRoutes;
@@ -1592,16 +2387,12 @@ class SavedRoutesScreen extends StatelessWidget {
                 children: [
                   Icon(Icons.route, size: 80, color: Colors.grey[300]),
                   const SizedBox(height: 16),
-                  Text(
-                    'No saved routes yet',
-                    style: TextStyle(fontSize: 18, color: Colors.grey[600]),
-                  ),
+                  Text('No saved routes yet',
+                      style: TextStyle(fontSize: 18, color: Colors.grey[600])),
                   const SizedBox(height: 8),
-                  Text(
-                    'Create a route and save it\nfrom the menu',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(color: Colors.grey[500]),
-                  ),
+                  Text('Create a route and save it\nfrom the menu',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(color: Colors.grey[500])),
                 ],
               ),
             )
@@ -1615,15 +2406,11 @@ class SavedRoutesScreen extends StatelessWidget {
                   child: ListTile(
                     leading: CircleAvatar(
                       backgroundColor: Colors.blue,
-                      child: Text(
-                        route.name[0].toUpperCase(),
-                        style: const TextStyle(color: Colors.white),
-                      ),
+                      child: Text(route.name[0].toUpperCase(),
+                          style: const TextStyle(color: Colors.white)),
                     ),
-                    title: Text(
-                      route.name,
-                      style: const TextStyle(fontWeight: FontWeight.bold),
-                    ),
+                    title: Text(route.name,
+                        style: const TextStyle(fontWeight: FontWeight.bold)),
                     subtitle: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
@@ -1634,12 +2421,10 @@ class SavedRoutesScreen extends StatelessWidget {
                                 size: 14, color: Colors.green),
                             const SizedBox(width: 4),
                             Expanded(
-                              child: Text(
-                                route.startAddress,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: const TextStyle(fontSize: 12),
-                              ),
+                              child: Text(route.startAddress,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(fontSize: 12)),
                             ),
                           ],
                         ),
@@ -1650,12 +2435,10 @@ class SavedRoutesScreen extends StatelessWidget {
                                 size: 14, color: Colors.red),
                             const SizedBox(width: 4),
                             Expanded(
-                              child: Text(
-                                route.destAddress,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: const TextStyle(fontSize: 12),
-                              ),
+                              child: Text(route.destAddress,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(fontSize: 12)),
                             ),
                           ],
                         ),
@@ -1666,12 +2449,12 @@ class SavedRoutesScreen extends StatelessWidget {
                       onPressed: () {
                         showDialog(
                           context: context,
-                          builder: (context) => AlertDialog(
+                          builder: (ctx) => AlertDialog(
                             title: const Text('Delete Route'),
                             content: Text('Delete "${route.name}"?'),
                             actions: [
                               TextButton(
-                                onPressed: () => Navigator.pop(context),
+                                onPressed: () => Navigator.pop(ctx),
                                 child: const Text('Cancel'),
                               ),
                               ElevatedButton(
@@ -1679,7 +2462,7 @@ class SavedRoutesScreen extends StatelessWidget {
                                     backgroundColor: Colors.red),
                                 onPressed: () {
                                   onDeleteRoute(index);
-                                  Navigator.pop(context);
+                                  Navigator.pop(ctx);
                                 },
                                 child: const Text('Delete'),
                               ),
