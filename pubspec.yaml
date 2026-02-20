@@ -1,6 +1,8 @@
-name: speed_camera_nav
-description: A GPS navigation app with speed camera detection
+name: navigation_app
+description: A Flutter navigation app with voice alerts and smart camera detection
+
 publish_to: "none"
+
 version: 1.0.0+1
 
 environment:
@@ -9,17 +11,26 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+
+  # Maps & Location
   google_maps_flutter: ^2.5.0
   geolocator: ^10.1.0
   permission_handler: ^11.0.1
-  flutter_polyline_points: ^2.0.0
+
+  # Networking & Storage
   http: ^1.1.0
-  flutter_tts: ^3.8.3
   shared_preferences: ^2.2.2
+
+  # Voice Alerts
+  flutter_tts: ^3.8.3
+
+  # UI
+  cupertino_icons: ^1.0.6
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
+
   flutter_lints: ^3.0.0
 
 flutter:

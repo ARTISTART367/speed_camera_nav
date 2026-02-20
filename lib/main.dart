@@ -8,6 +8,20 @@ import 'package:geolocator/geolocator.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter_tts/flutter_tts.dart';
+
+// ═══════════════════════════════════════════════════════════════════════════
+// VOICE ALERTS FEATURE
+// ═══════════════════════════════════════════════════════════════════════════
+// The app now includes text-to-speech voice announcements for:
+//   1. Navigation start/stop - "Navigation started" / "Navigation stopped"
+//   2. Route calculation - Announces total cameras/accidents/traffic on route
+//   3. Proximity alerts - "Attention. Speed camera ahead." (within 150m)
+//   4. Report confirmation - "Speed camera reported and saved."
+//
+// Voice settings: English (US), rate 0.5 (slower for clarity), volume 1.0
+// Package required: flutter_tts (add to pubspec.yaml)
+// ═══════════════════════════════════════════════════════════════════════════
 
 // ─────────────────────────────────────────────
 // CUSTOM MARKER ICON PAINTER
@@ -427,6 +441,9 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
   BitmapDescriptor? _accidentIcon;
   BitmapDescriptor? _trafficIcon;
 
+  // Text-to-Speech for voice alerts
+  final FlutterTts _tts = FlutterTts();
+
   // Live Location Tracking
   StreamSubscription<Position>? _positionStreamSubscription;
   bool _isNavigating = false;
@@ -439,6 +456,14 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
     _loadSavedRoutes();
     _loadReportedLocations();
     _generateMarkerIcons();
+    _initializeTts();
+  }
+
+  Future<void> _initializeTts() async {
+    await _tts.setLanguage("en-US");
+    await _tts.setSpeechRate(0.5); // Slightly slower for clarity
+    await _tts.setVolume(1.0);
+    await _tts.setPitch(1.0);
   }
 
   Future<void> _generateMarkerIcons() async {
@@ -454,6 +479,7 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
     _sourceController.dispose();
     _destController.dispose();
     _positionStreamSubscription?.cancel();
+    _tts.stop();
     super.dispose();
   }
 
@@ -719,7 +745,21 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
       parts.add('$accidents accident${accidents > 1 ? 's' : ''}');
     if (traffic > 0) parts.add('$traffic traffic jam${traffic > 1 ? 's' : ''}');
 
-    _showSnackBar('⚠️ Route has: ${parts.join(', ')}');
+    final message = 'Route has: ${parts.join(', ')}';
+    _showSnackBar('⚠️ $message');
+
+    // Voice announcement for route summary
+    if (cameras > 0 || accidents > 0 || traffic > 0) {
+      final voiceParts = <String>[];
+      if (cameras > 0)
+        voiceParts.add('$cameras speed camera${cameras > 1 ? 's' : ''}');
+      if (accidents > 0)
+        voiceParts.add('$accidents accident${accidents > 1 ? 's' : ''}');
+      if (traffic > 0)
+        voiceParts.add('$traffic traffic jam${traffic > 1 ? 's' : ''}');
+
+      _tts.speak('Route alert. Your route has ${voiceParts.join(', and ')}.');
+    }
   }
 
   // ── Geocoding / Search ──────────────────────
@@ -932,12 +972,36 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
       setState(() {
         _notifications.insert(0, msg);
       });
+
+      // Voice alert
+      _speakAlert(report.type);
+
       Future.delayed(const Duration(seconds: 6), () {
         if (mounted && _notifications.isNotEmpty) {
           setState(() => _notifications.remove(msg));
         }
       });
     }
+  }
+
+  /// Speaks the alert message using text-to-speech.
+  Future<void> _speakAlert(String reportType) async {
+    String message;
+    switch (reportType) {
+      case 'Speed Camera':
+        message = 'Attention. Speed camera ahead.';
+        break;
+      case 'Accident':
+        message = 'Warning. Accident ahead.';
+        break;
+      case 'Traffic Jam':
+        message = 'Alert. Traffic jam ahead.';
+        break;
+      default:
+        message = 'Warning ahead.';
+    }
+
+    await _tts.speak(message);
   }
 
   void _stopLiveTracking() {
@@ -952,6 +1016,7 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
   void _toggleNavigation() {
     if (_isNavigating) {
       _stopLiveTracking();
+      _tts.speak('Navigation stopped.');
       _showSnackBar('Navigation stopped');
     } else {
       if (_routePoints.isEmpty) {
@@ -979,6 +1044,7 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
         );
       }
 
+      _tts.speak('Navigation started.');
       _showSnackBar('Navigation started – zoom out anytime to see full route');
     }
   }
@@ -1016,6 +1082,7 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
   Future<void> _addReport(String type) async {
     if (_currentPosition == null) {
       _showSnackBar('Waiting for GPS location...');
+      await _tts.speak('Waiting for GPS location.');
       return;
     }
 
@@ -1052,6 +1119,23 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
 
     final persist = isPermanent ? 'Saved permanently' : 'Saved for 2 hours';
     _showSnackBar('$type reported. $persist.');
+
+    // Voice confirmation
+    String voiceMsg;
+    switch (type) {
+      case 'Speed Camera':
+        voiceMsg = 'Speed camera reported and saved.';
+        break;
+      case 'Accident':
+        voiceMsg = 'Accident reported.';
+        break;
+      case 'Traffic Jam':
+        voiceMsg = 'Traffic jam reported.';
+        break;
+      default:
+        voiceMsg = 'Report saved.';
+    }
+    await _tts.speak(voiceMsg);
   }
 
   // ── Saved Routes ────────────────────────────
